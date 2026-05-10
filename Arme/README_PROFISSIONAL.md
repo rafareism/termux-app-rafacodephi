@@ -71,3 +71,9 @@ A etapa só fecha quando houver evidência verificável de:
 - upload de artefatos configurado;
 - documentação mínima alinhada;
 - diff claro e rastreável no histórico Git.
+
+
+## Normalização de nomes aplicada
+- `Compilador ASM.sh` -> `compilador_asm_legacy.sh`
+- Novo orquestrador com heredoc: `compilador_asm_refatorado.sh`
+- Documento de união lógica: `engenharia_estado_unificado.md`
