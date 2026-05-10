@@ -30,7 +30,12 @@ final class BootstrapBaremetalGuard {
     private static native int validatePrefixNative(String prefix, ByteBuffer out, int cap);
 
     static void selftest() {
-        if (!LIB_LOADED) return;
+        if (!LIB_LOADED) {
+            String msg = "selftest skipped: native lib not loaded";
+            if (BuildConfig.BOOTSTRAP_BAREMETAL_STRICT) throw new RuntimeException(msg);
+            Logger.logWarn(LOG_TAG, msg);
+            return;
+        }
         int rc;
         String json;
         synchronized (SHARED_BUFFER) {
@@ -38,13 +43,17 @@ final class BootstrapBaremetalGuard {
             try {
                 rc = selftestNative(SHARED_BUFFER, BUFFER_CAPACITY);
             } catch (UnsatisfiedLinkError e) {
-                Logger.logWarn(LOG_TAG, "selftestNative missing JNI symbol: " + e.getMessage());
+                String msg = "selftestNative missing JNI symbol: " + e.getMessage();
+                if (BuildConfig.BOOTSTRAP_BAREMETAL_STRICT) throw new RuntimeException(msg, e);
+                Logger.logWarn(LOG_TAG, msg);
                 return;
             }
             json = readBufferString();
         }
         if (rc < 0) {
-            Logger.logWarn(LOG_TAG, "selftest failed rc=" + rc + " payload=" + json);
+            String msg = "selftest failed rc=" + rc + " payload=" + json;
+            if (BuildConfig.BOOTSTRAP_BAREMETAL_STRICT) throw new RuntimeException(msg);
+            Logger.logWarn(LOG_TAG, msg);
         } else {
             Logger.logInfo(LOG_TAG, "selftest ok payload=" + json);
         }
@@ -52,7 +61,9 @@ final class BootstrapBaremetalGuard {
 
     static void validateAfterBootstrap(String prefix) {
         if (!LIB_LOADED) {
-            Logger.logWarn(LOG_TAG, "Skipped guard validation: native lib not loaded");
+            String msg = "Skipped guard validation: native lib not loaded";
+            if (BuildConfig.BOOTSTRAP_BAREMETAL_STRICT) throw new RuntimeException(msg);
+            Logger.logWarn(LOG_TAG, msg);
             return;
         }
         int rc;
@@ -62,7 +73,9 @@ final class BootstrapBaremetalGuard {
             try {
                 rc = validatePrefixNative(prefix, SHARED_BUFFER, BUFFER_CAPACITY);
             } catch (UnsatisfiedLinkError e) {
-                Logger.logWarn(LOG_TAG, "validatePrefixNative missing JNI symbol: " + e.getMessage());
+                String msg = "validatePrefixNative missing JNI symbol: " + e.getMessage();
+                if (BuildConfig.BOOTSTRAP_BAREMETAL_STRICT) throw new RuntimeException(msg, e);
+                Logger.logWarn(LOG_TAG, msg);
                 return;
             }
             json = readBufferString();
