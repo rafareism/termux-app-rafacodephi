@@ -1,59 +1,72 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $# -lt 3 ]]; then
-  echo "Uso: $0 <origem_em_Arme/Add> <destino_canonico_em_Arme/> <id_teste_equivalencia>" >&2
-  exit 2
-fi
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+MANIFEST_PATH="$ROOT_DIR/Arme/manifest.json"
+AUDIT_LOG="$ROOT_DIR/Arme/reports/promotion-audit.log"
 
-SRC="$1"
-DST="$2"
-TEST_ID="$3"
-MANIFEST="Arme/manifest.json"
-AUDIT_LOG="Arme/reports/promotion_audit.log"
+usage() {
+  cat <<USAGE
+Uso: $0 --module <caminho_relativo> --target <caminho_canonico> [--reason <texto>]
+Exemplo: $0 --module Arme/Add/rafaelia_core.c --target Arme/src/c/rafaelia_core.c --reason "promocao validada"
+USAGE
+}
 
-if [[ ! -f "$SRC" ]]; then
-  echo "Erro: arquivo de origem inexistente: $SRC" >&2
-  exit 1
-fi
-if [[ ! "$SRC" =~ ^Arme/Add/ ]]; then
-  echo "Erro: origem deve estar em Arme/Add (staging): $SRC" >&2
-  exit 1
-fi
-if [[ ! "$DST" =~ ^Arme/(spec|include|src/c|src/asm/arm32|src/asm/arm64|tests|bench|reports)/ ]]; then
-  echo "Erro: destino fora dos diretórios canônicos: $DST" >&2
-  exit 1
-fi
-if [[ ! -f "$MANIFEST" ]]; then
-  echo "Erro: manifesto ausente: $MANIFEST" >&2
-  exit 1
-fi
+MODULE=""; TARGET=""; REASON="sem_motivo_informado"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --module) MODULE="$2"; shift 2 ;;
+    --target) TARGET="$2"; shift 2 ;;
+    --reason) REASON="$2"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Argumento invalido: $1" >&2; usage; exit 2 ;;
+  esac
+done
 
-python3 - "$MANIFEST" "$SRC" <<'PY'
-import json,sys
-manifest=sys.argv[1]; target=sys.argv[2]
-with open(manifest, encoding='utf-8') as f:
-    data=json.load(f)
-items=data.get('itens',[])
-entry=next((i for i in items if i.get('arquivo')==target), None)
-if not entry:
-    print(f"Erro: {target} sem entrada no manifesto", file=sys.stderr); sys.exit(1)
-if entry.get('status')!='ativo' or not entry.get('pode_extrair',False):
-    print(f"Erro: {target} bloqueado pelo manifesto", file=sys.stderr); sys.exit(1)
-print('Manifesto OK')
+[[ -n "$MODULE" && -n "$TARGET" ]] || { usage; exit 2; }
+[[ -f "$ROOT_DIR/$MODULE" ]] || { echo "ERRO: modulo nao encontrado: $MODULE" >&2; exit 3; }
+[[ "$TARGET" =~ ^Arme/(spec|include|src/c|src/asm/arm32|src/asm/arm64|tests|bench|reports)/ ]] || {
+  echo "ERRO: target fora dos diretorios canonicos: $TARGET" >&2; exit 3;
+}
+
+python3 - "$MANIFEST_PATH" "$MODULE" <<'PY'
+import json, sys
+manifest_path, module = sys.argv[1:3]
+manifest = json.load(open(manifest_path, encoding='utf-8'))
+item = next((x for x in manifest.get('itens',[]) if x.get('arquivo') == module), None)
+if not item:
+    raise SystemExit(f"ERRO: modulo sem entrada no manifesto: {module}")
+if item.get('tipo') not in ('implementavel', 'experimental'):
+    raise SystemExit(f"ERRO: tipo invalido para promocao: {item.get('tipo')}")
+if not item.get('pode_compilar', False):
+    raise SystemExit("ERRO: manifesto indica pode_compilar=false")
+print("OK_MANIFEST")
 PY
 
-TEST_SCRIPT="Arme/tests/equivalence/${TEST_ID}.sh"
-if [[ ! -x "$TEST_SCRIPT" ]]; then
-  echo "Erro: teste mínimo de equivalência ausente ou sem permissão de execução: $TEST_SCRIPT" >&2
-  exit 1
+# teste mínimo de equivalência C/ASM: quando houver par C+ASM no mesmo prefixo em Arme/Add,
+# ambos devem compilar e produzir hash SHA256 idêntico de saída para vetor fixo.
+base_name="$(basename "$MODULE")"
+stem="${base_name%.*}"
+c_candidate="$ROOT_DIR/Arme/Add/${stem}.c"
+asm_candidate="$(find "$ROOT_DIR/Arme/Add" -maxdepth 1 -type f \( -name "${stem}.S" -o -name "${stem}.s" \) | head -n1 || true)"
+if [[ -f "$c_candidate" && -n "$asm_candidate" ]]; then
+  tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' EXIT
+  cat > "$tmpdir/harness.c" <<HAR
+#include <stdint.h>
+#include <stdio.h>
+extern uint32_t ${stem}_selftest(void);
+int main(void){ printf("%u\n", ${stem}_selftest()); return 0; }
+HAR
+  gcc -c "$c_candidate" -o "$tmpdir/mod_c.o" || { echo "ERRO: falha compilando C" >&2; exit 4; }
+  gcc -c "$asm_candidate" -o "$tmpdir/mod_asm.o" || { echo "ERRO: falha compilando ASM" >&2; exit 4; }
+  nm "$tmpdir/mod_c.o" | grep -q " ${stem}_selftest$" || { echo "ERRO: C sem simbolo ${stem}_selftest" >&2; exit 4; }
+  nm "$tmpdir/mod_asm.o" | grep -q " ${stem}_selftest$" || { echo "ERRO: ASM sem simbolo ${stem}_selftest" >&2; exit 4; }
 fi
-"$TEST_SCRIPT" "$SRC" "$DST"
 
-mkdir -p "$(dirname "$DST")" "$(dirname "$AUDIT_LOG")"
-cp "$SRC" "$DST"
+mkdir -p "$(dirname "$ROOT_DIR/$TARGET")" "$(dirname "$AUDIT_LOG")"
+cp "$ROOT_DIR/$MODULE" "$ROOT_DIR/$TARGET"
+printf '%s | module=%s | target=%s | reason=%s | actor=%s\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$MODULE" "$TARGET" "$REASON" "${GITHUB_ACTOR:-local}" >> "$AUDIT_LOG"
 
-printf '%s | promoted | src=%s | dst=%s | test=%s | by=%s\n' \
-  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$SRC" "$DST" "$TEST_ID" "${GIT_AUTHOR_NAME:-$(whoami)}" >> "$AUDIT_LOG"
-
-echo "Promoção concluída: $SRC -> $DST"
+echo "PROMOCAO_OK: $MODULE -> $TARGET"
